@@ -12,6 +12,7 @@ data_list2 = []
 dataIDNotSame = []
 dataCommonData = []
 dataVMBalance = []
+dataVMB = []
 
 logging.basicConfig(filename='mylog.txt', format="%(asctime)s : %(message)s",
                     level=logging.DEBUG)
@@ -90,12 +91,20 @@ def SetFont(type):
         pattern.pattern = xlwt.Pattern.SOLID_PATTERN
         pattern.pattern_fore_colour = xlwt.Style.colour_map['yellow']
         style.pattern = pattern
+    elif type == 3:
+        # 设置单元格背景色
+        pattern.pattern = xlwt.Pattern.SOLID_PATTERN
+        pattern.pattern_fore_colour = xlwt.Style.colour_map['orange']
+        style.pattern = pattern
     return style
 
 
 # 解析数据，获取对应结果
 def XLSAnalysis(data_list1, data_list2):
     logging.info('get result begin ')
+
+    # 读取配置文件
+    confDic = readConfig()
     # 1.判断虚拟机id，所属主机不一致情况，不一致，输出到’虚拟机所属主机不一致‘页签
     for dic1 in data_list1:
         for dic2 in data_list2:
@@ -113,8 +122,9 @@ def XLSAnalysis(data_list1, data_list2):
     # 2.常规指标检测，超出对应阈值输出到’常规指标‘页签
     for dic1 in data_list1:
         if dic1['CPU使用率'] != 'N/A' and 'UDM' in dic1['虚拟机名称']:
-            if dic1['状态'] != '正常' or float(dic1['CPU使用率']) > 80 or float(dic1['内存使用率']) > 80 or float(
-                    dic1['磁盘使用率']) > 80:
+            if dic1['状态'] != '正常' or float(dic1['CPU使用率']) > float(confDic['CpuUtilizationThreshold']) or \
+                    float(dic1['内存使用率']) > float(confDic['MemoryUsageThreshold']) or \
+                    float(dic1['磁盘使用率']) > float(confDic['DiskUtilizationThreshold']):
                 dictCommonData = {}
                 dictCommonData['虚拟机名称'] = dic1['虚拟机名称']
                 dictCommonData['虚拟机ID'] = dic1['虚拟机ID']
@@ -125,7 +135,31 @@ def XLSAnalysis(data_list1, data_list2):
                 dataCommonData.append(dictCommonData)
 
     # 3. 虚拟机均衡，相同类型虚拟机不能在同一机柜，如果存在则输出
-    dataVMBalance.extend(VMBalance(data_list1))
+    dataVMBalance.extend(VMBalance(data_list1, confDic['VmAffinityInspectionLevel']))
+    dataVMBalance.sort(key=lambda k: (k.get('虚拟机名称', 0)))
+    i = 0
+    while i < len(dataVMBalance):
+        dataVMList = []
+        for j in range(i, len(dataVMBalance)):
+            lvm1 = dataVMBalance[i]['虚拟机名称'].split('_')
+            lvm2 = dataVMBalance[j]['虚拟机名称'].split('_')
+            # 规则一：按‘_’分割，如果取到的最后两个‘_’前面的数据一样，认为同类型
+            lvmfront1 = ''.join(lvm1[:len(lvm1) - 2])
+            lvmfront2 = ''.join(lvm2[:len(lvm2) - 2])
+            # 规则二：按’_'分割，如果倒数第三个有中划线，取除中划线前面数据，拼接上倒数两个'_'的数据比较，如果一样，认为同类型
+            l1 = lvm1[len(lvm1) - 3]
+            l2 = lvm2[len(lvm2) - 3]
+            lvmfront3 = ''.join(lvm1[:len(lvm1) - 3] + l1.split('-')[0:1] + lvm1[len(lvm1) - 2:])
+            lvmfront4 = ''.join(lvm2[:len(lvm1) - 3] + l2.split('-')[0:1] + lvm2[len(lvm2) - 2:])
+            if lvmfront1 == lvmfront2 or lvmfront3 == lvmfront4:
+                dataVMList.append(dataVMBalance[j])
+                if j == len(dataVMBalance) - 1:
+                    i = len(dataVMBalance)
+                    dataVMB.append(dataVMList)
+            else:
+                dataVMB.append(dataVMList)
+                i = j
+                break
     logging.info('get result end ')
     # for i in dataVMBalance:
     #     print(i)
@@ -140,7 +174,7 @@ def XLSAnalysis(data_list1, data_list2):
 '''
 
 
-def VMBalance(data_list1):
+def VMBalance(data_list1, InspectionLevel):
     logging.info('vmbalance begin')
     res = []
     for i in range(len(data_list1)):
@@ -150,7 +184,7 @@ def VMBalance(data_list1):
                 lvms = data_list1[j]['虚拟机名称']
                 lhf = data_list1[i]['所属主机']
                 lhs = data_list1[j]['所属主机']
-                ltmp = VMCmp(lvmf, lvms, lhf, lhs)
+                ltmp = VMCmp(lvmf, lvms, lhf, lhs, InspectionLevel)
                 if len(res):
                     res.extend(ltmp)
                 else:
@@ -173,6 +207,29 @@ def distinct2(items):
     return result
 
 
+# 读取配置文件
+def readConfig():
+    try:
+        confDic = {'CpuUtilizationThreshold': '80', 'MemoryUsageThreshold': '80',
+                   'DiskUtilizationThreshold': '80', 'VmAffinityInspectionLevel': 'server'}
+        file = open(os.getcwd() + '\\config.txt', "rb")
+        for line in file.readlines():
+            if 'CpuUtilizationThreshold' in line.decode() and line.decode().split('=')[1].strip('\n\t\r') != '':
+                confDic['CpuUtilizationThreshold'] = line.decode().split('=')[1].strip('\n\t\r')
+            if 'MemoryUsageThreshold' in line.decode() and line.decode().split('=')[1].strip('\n\t\r') != '':
+                confDic['MemoryUsageThreshold'] = line.decode().split('=')[1].strip('\n\t\r')
+            if 'DiskUtilizationThreshold' in line.decode() and line.decode().split('=')[1].strip('\n\t\r') != '':
+                confDic['DiskUtilizationThreshold'] = line.decode().split('=')[1].strip('\n\t\r')
+            if 'VmAffinityInspectionLevel' in line.decode() and line.decode().split('=')[1].strip('\n\t\r') != '':
+                confDic['VmAffinityInspectionLevel'] = line.decode().split('=')[1].strip('\n\t\r')
+    except Exception as err:
+        logging.error('readConfig function error : %s', err)
+    finally:
+        if file:
+            file.close()
+    return confDic
+
+
 # 是否以数字结尾
 def end_num(string):
     # 以一个数字结尾字符串
@@ -183,7 +240,7 @@ def end_num(string):
         return False
 
 
-def VMCmp(lvmf, lvms, lhf, lhs):
+def VMCmp(lvmf, lvms, lhf, lhs, InspectionLevel):
     # 按'_'分割
     lvm1 = lvmf.split('_')
     lvm2 = lvms.split('_')
@@ -191,9 +248,13 @@ def VMCmp(lvmf, lvms, lhf, lhs):
     lh2 = lhs.split('-')
     # 存放结果
     lres = []
-    # 截取所属主机对应位置
-    lh1 = lh1[4].split('U')[0]
-    lh2 = lh2[4].split('U')[0]
+    # 截取所属主机对应位置,分柜级可靠性和服务器级可靠性
+    if InspectionLevel == 'cabinet':
+        lh1 = lh1[4].split('U')[0]
+        lh2 = lh2[4].split('U')[0]
+    if InspectionLevel == 'host':
+        lh1 = lh1[4]
+        lh2 = lh2[4]
 
     # 规则一：按‘_’分割，如果取到的最后两个‘_’前面的数据一样，认为同类型
     lvmfront1 = ''.join(lvm1[:len(lvm1) - 2])
@@ -208,7 +269,7 @@ def VMCmp(lvmf, lvms, lhf, lhs):
         dict2['所属主机'] = lhs
         lres.append(dict2)
 
-    # 规则一：按’_'分割，如果倒数第三个有中划线，取除中划线前面数据，拼接上倒数两个'_'的数据比较，如果一样，认为同类型
+    # 规则二：按’_'分割，如果倒数第三个有中划线，取除中划线前面数据，拼接上倒数两个'_'的数据比较，如果一样，认为同类型
     l1 = lvm1[len(lvm1) - 3]
     l2 = lvm2[len(lvm2) - 3]
     if '-' in l1 and '-' in l2:
@@ -230,6 +291,7 @@ def VMCmp(lvmf, lvms, lhf, lhs):
 def XLSWrite(XLSPath):
     # 写数据时，行计数器
     logging.info('xls write begin')
+    confDic = readConfig()
     shtNum1 = 1
     shtNum2 = 1
     shtNum3 = 1
@@ -282,15 +344,15 @@ def XLSWrite(XLSPath):
                 sht2.write(shtNum2, 2, dic2['状态'], SetFont(2))
             else:
                 sht2.write(shtNum2, 2, dic2['状态'])
-            if float(dic2['CPU使用率']) > 80:
+            if float(dic2['CPU使用率']) > float(confDic['CpuUtilizationThreshold']):
                 sht2.write(shtNum2, 3, dic2['CPU使用率'], SetFont(2))
             else:
                 sht2.write(shtNum2, 3, dic2['CPU使用率'])
-            if float(dic2['内存使用率']) > 80:
+            if float(dic2['内存使用率']) > float(confDic['MemoryUsageThreshold']):
                 sht2.write(shtNum2, 4, dic2['内存使用率'], SetFont(2))
             else:
                 sht2.write(shtNum2, 4, dic2['内存使用率'])
-            if float(dic2['磁盘使用率']) > 80:
+            if float(dic2['磁盘使用率']) > float(confDic['DiskUtilizationThreshold']):
                 sht2.write(shtNum2, 5, dic2['磁盘使用率'], SetFont(2))
             else:
                 sht2.write(shtNum2, 5, dic2['磁盘使用率'])
@@ -299,11 +361,23 @@ def XLSWrite(XLSPath):
         sht2.write_merge(shtNum2, shtNum2, 0, 5, '检测后，当前无常规指标相关数据', SetFont(2))
 
     # sheet3
-    if len(dataVMBalance):
-        for dic3 in dataVMBalance:
-            sht3.write(shtNum3, 0, dic3['虚拟机名称'])
-            sht3.write(shtNum3, 1, dic3['所属主机'])
-            shtNum3 = shtNum3 + 1
+    # if len(dataVMBalance):
+    #     for dic3 in dataVMBalance:
+    #         sht3.write(shtNum3, 0, dic3['虚拟机名称'])
+    #         sht3.write(shtNum3, 1, dic3['所属主机'])
+    #         shtNum3 = shtNum3 + 1
+    if len(dataVMB):
+        for i in range(len(dataVMB)):
+            if i % 2 == 0:
+                for dic3 in dataVMB[i]:
+                    sht3.write(shtNum3, 0, dic3['虚拟机名称'], SetFont(2))
+                    sht3.write(shtNum3, 1, dic3['所属主机'], SetFont(2))
+                    shtNum3 = shtNum3 + 1
+            else:
+                for dic3 in dataVMB[i]:
+                    sht3.write(shtNum3, 0, dic3['虚拟机名称'], SetFont(3))
+                    sht3.write(shtNum3, 1, dic3['所属主机'], SetFont(3))
+                    shtNum3 = shtNum3 + 1
     else:
         sht3.write_merge(shtNum3, shtNum3, 0, 1, '检测后，当前无虚拟机反亲和性相关数据', SetFont(2))
     xls.save(XLSPath)
